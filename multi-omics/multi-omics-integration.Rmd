@@ -1,0 +1,246 @@
+---
+title: "Multi-omics integration"
+format:
+  html:
+    toc: true
+---
+
+# Introduction and Dataset
+
+Multi-omics integration is a field with potential for nearly any research question aiming at understand biological mechanisms. With the advance in biomolecule detection technologies, there is abundance and increasing variety of what can be captured in a living system. Integration has challenges due to the variability between what and how each method captures the biological signal. A small example of that is the difference in scale between single cell transcriptomics (thousands of genes) and single cell proteomics (only hundreds of genes), which makes pairing these methods not feasible in many cases. One way to group integration methods is based on the anchor shared by all OMICS method. In **Vertical/matched Integration** all methods are generated from (i.e anchored on) the same sample set. **Unmatched/diagonal Integration** is probably the hardest because each OMICS is generated using different sample due to easier handling etc. **Mosaic Integration** is the case of analysing different samples using mutli-OMICS with some overlap between the used methods (e.g trans/proteomics for one sample, trans/epigenomics for the other). Here, we discuss the first approach, vertical integration.
+
+Methylation is a one of the most important epigenetic modifications that happen in the genome, where a methyl group is added to cytosine bases -especially in CpG sites found near promoter regions- by enzyme group called DNA methyltransferases (DNMTs). This modification regulates the expression of DNA (i.e genes) by preventing transcription factors from binding to the DNA. Mapping these modification patterns is one of the established methods for identifying tumor classes in Cancer research. Combined with other sequencing methods such as RNA-seq and Whole Exome Seq, , we obtain an overview of a disease and reach better understanding of the biological mechanism underlying it. Colorectal Cancer is one of the most common cancers worldwide. The dataset used here consists of two subtypes of (CMS1 and CMS3) 121 tumors obtained from the TCGA colorectal cancer cohort in the Pan-Cancer project ([Weinstein et al. 2013](https://www.nature.com/articles/ng.2764)) in three modalitlies: RNA-seq, Exome-seq and Copy Number Variation.
+
+### Importing all data modalities
+
+```{r}
+#| echo: false
+library(compGenomRData)
+```
+
+```{r}
+# RNA-seq
+csv_rna_seq = system.file("extdata", "multi-omics", "COREAD_CMS13_gex.csv", package="compGenomRData")
+
+RnaSeq_data = read.csv(csv_rna_seq, row.names=1)
+
+head(RnaSeq_data[,1:5],5)
+```
+
+**Note:** The decimal values are *RPKM* (Read Per Kilobase of transcript Per Million mapped reads), formula is: 
+$$
+\text{RPKM} = \frac{\text{Gene Read Count}}{\left(\frac{\text{Total Mapped Reads}}{1{,}000{,}000}\right) \times \left(\frac{\text{Gene Length in bp}}{1{,}000}\right)} = \frac{\text{Gene Read Count} \times 10^9}{\text{Total Mapped Reads} \times \text{Gene Length in bp}}
+$$
+
+```{r}
+# WES
+csv_wes = system.file("extdata", "multi-omics", "COREAD_CMS13_muts.csv", 
+                       package="compGenomRData")
+wes_data = read.csv(csv_wes, row.names=1)
+
+# Set mutation data to be binary (i.e if a gene has more than 1 mutation, we only count one)
+wes_data[wes_data>0]=1
+
+head(wes_data[,1:5],5)
+```
+
+**Note:** that the original data includes decimal values between 0,1. These are likely mutation counts per gene normalized by either coding sequence or gene length. For simplicity, we assume that any non-zero value signifies a mutation in the gene.
+
+```{r}
+# CNV
+csv_cnv = system.file("extdata", "multi-omics", "COREAD_CMS13_cnv.csv", package="compGenomRData")
+
+cnv_data = read.csv(csv_cnv, row.names=1)
+
+head(cnv_data[,8:14],5)
+```
+
+**Note:** The decimal values are the \*GISTIC scores\* (Genomic Identification of Significant Targets in Cancer), they calculated by an algorithm that combines the frequency of CNV and the amplitude (copy number losses/gains) per locus across samples. The loci names are band locations in chromosomes. In contrast to the other data types, where measurements reflect a biological event of expression or mutation, this one reflects a consequence of genomic instability induced by the process of carcinogenesis where genomic rearrangements alter the number of DNA segments.
+
+```{r}
+# subtype of each sample
+csv_subtypes = system.file("extdata", "multi-omics", "COREAD_CMS13_subtypes.csv", package="compGenomRData")
+
+covariates = read.csv(csv_subtypes, row.names=1)
+
+# Fix the TCGA identifiers so they match up with the data
+rownames(covariates) = gsub(pattern = '-', replacement = '\\.', rownames(covariates))
+
+# reorder the samples entries for proper labelling
+covariates = covariates[colnames(RnaSeq_data),]
+
+# create a dataframe which will be used to annotate later graphs
+anno_col = data.frame(cms=as.factor(covariates$cms_label))
+rownames(anno_col) = rownames(covariates)
+head(covariates[,1:5])
+```
+
+The covariates data include the following variables:
+
+| Category                   | Variable    | Description                                                             | Values / Encoding                                           |
+|:-----------------|:-----------------|:-----------------|:-----------------|
+| **Cohort & Demographics**  | `dataset`   | Source cohort identifier                                                | `tcga` (The Cancer Genome Atlas)                            |
+|                            | `age`       | Patient age at diagnosis                                                | Continuous (years)                                          |
+|                            | `gender`    | Biological sex of the patient                                           | `male`, `female`                                            |
+| **Staging & Pathology**    | `stage`     | Overall pathological AJCC tumor stage                                   | `1`–`4`                                                     |
+|                            | `pt`        | Pathological Primary Tumor (`pT`) stage (size and local invasion depth) | `T1`–`T4`                                                   |
+|                            | `pn`        | Pathological Regional Lymph Nodes (`pN`) stage (lymph node spread)      | `0`,`1`,`2`                                                 |
+|                            | `pm`        | Pathological Distant Metastasis (`pM`) stage (distant organ spread)     | `0`, `1`                                                    |
+|                            | `tnm`       | Combined TNM staging classification                                     | Composite TNM string                                        |
+|                            | `grade`     | Histological tumor differentiation grade                                | `NA` (typically: G1–G3 well to poorly differentiated)       |
+| **Molecular & Mutational** | `msi`       | Microsatellite instability status (mismatch repair deficiency)          | `msi`, `mss`                                                |
+|                            | `cimp`      | CpG island methylator phenotype (promoter hypermethylation)             | `CIMP.High`, `CIMP.Low`, `CIMP.Neg`                         |
+|                            | `kras_mut`  | Somatic mutation status of the *KRAS* oncogene                          | `0` (wild-type), `1` (mutated)                              |
+|                            | `braf_mut`  | Somatic mutation status of the *BRAF* oncogene                          | `0` (wild-type), `1` (mutated)                              |
+|                            | `cms_label` | Consensus Molecular Subtype classification                              | `CMS1`, `CMS3`                                              |
+| **Survival Outcomes**      | `osMo`      | Overall Survival (OS) follow-up time                                    | `0`, `1` (typically continuous, months)                     |
+|                            | `osStat`    | Overall Survival (OS) event indicator                                   | `0` (alive/censored), `1` (deceased)                        |
+|                            | `rfsMo`     | Relapse-Free Survival (RFS) follow-up time                              | `NA` (typically continuous months)                          |
+|                            | `rfsStat`   | Relapse-Free Survival (RFS) event indicator                             | `NA` (typically: `0`no recurrence/censored, `1` recurrence) |
+
+The first exploratory task to do is plotting heatmaps to see the patterns in the data and if sample groups cluster together.
+
+```{r}
+# gene expression heatmap annotated with sample subtype
+pheatmap::pheatmap(RnaSeq_data, annotation_col = anno_col, show_colnames = FALSE, show_rownames = FALSE, main="Gene expression data")
+```
+
+```{r}
+# mutation heatmap annotated with sample subtype
+pheatmap::pheatmap(wes_data, annotation_col = anno_col, show_colnames = FALSE, show_rownames = FALSE, main="Gene expression data")
+```
+
+```{r}
+# CNV heatmap annotated with sample subtype
+pheatmap::pheatmap(cnv_data, annotation_col = anno_col, show_colnames = FALSE, show_rownames = FALSE, main="Gene expression data")
+```
+
+Looking into the threes heatmaps; no single method can differentiate samples and provide a clear explanation of what drives the differentiation to one of the subtypes. Combining these three data types, the aim is to obtain a better understanding of the biological process leading to differentiation.
+
+# Integration Analysis
+
+### Multiple Factor Analysis
+
+To begin with, I believe it helps to simplify the terminology used in this domain. **Latent Variable Models**, is a class of unsupervised statistical approaches that functions as dimensionality reduction in multi-omics integration. Latent variables refer to hidden factors that underline the characteristics of observed data but are unobserved (hence "latent"). These factors differ from experiment/data type to another, in the case of **Bulk-RNA-seq**, RNA is extracted from multiple cells in a tissue and multiplexed, which means that we can no more observe the cell type in our final measurement despite having important impact on the abundance of RNA molecules. To obtain these latent variables we use **Matrix Factorization** which is family of LVMs,that infers a set of latent variables by factorizing/breaking down the data matrix into smaller pieces. When applying **Principal Component Analysis** over the multi-dimensional data we end up having a matrix factorization. **Singular Value Decomposition** is one of the algorithms used to compute PCA.
+
+Second, we now consider how we can combine the three modalities together. The first problem faced is the different in scale between data types. **Multiple factor Analysis** solves this by first normalizing each matrix/data on its own before stacking/joining them to a single giant matrix. MFA does the scaling by z-standardization automatically then applies PCA (with SVD) for each data type seperately, calculates the first eigenvalue and normalizes all variables over their respective first eigenvalue. Recalling that eigenvalue is a scalar that describes variation of each PC (1 in this case), this means that each data weighted by the variance of its 1st PC. The final result looks like this, 𝜆𝑖 is the first eigenvalue of the principal component decomposition of 𝑋𝑖.
+
+$$
+X_n =\begin{bmatrix}X_1 / \sqrt{\lambda_1^{(1)}} \\X_2 / \sqrt{\lambda_1^{(2)}} \\\vdots \\X_L / \sqrt{\lambda_1^{(L)}}\end{bmatrix}= WH
+$$
+
+```{r}
+# scaling with z-standardization, then normalization over PC1 variance
+# mfa expects sample x variable, so need to transpose
+mfa_res = FactoMineR::MFA(base = t(rbind(RnaSeq_data, wes_data, cnv_data)),
+                      group = c(dim(RnaSeq_data)[1], dim(wes_data)[1], dim(cnv_data)[1]),
+                      type = c("s", "c", "s"), graph=FALSE)
+```
+
+**Note:** The original implementation uses the default data `type = "s"` which is wrong because `wes_data` is binary/categorical, and using `"s"` will lead to standardizing binary values and distorting the weight of genes and can even return error due to 0-divisiob of genes with no mutations (i.e zero variance). While `"n"` is the ideal value and requires transforming values to R factors, it is better swapped for `"c"` because it scales without standardizing.
+
+```{r}
+# extract the H and W matrices from MFA result
+mfa_h = mfa_res$global.pca$ind$coord
+mfa_w = mfa_res$quanti.var$coord
+
+# create a dataframe with the H matrix and the CMS label
+mfa_df = as.data.frame(mfa_h)
+mfa_df$subtype = factor(covariates[rownames(mfa_df),]$cms_label)
+
+# create the plot
+ggplot2::ggplot(mfa_df, ggplot2::aes(x=Dim.1, y=Dim.2, color=subtype)) +
+ggplot2::geom_point() + ggplot2::ggtitle("Scatter plot of MFA")
+```
+
+Dimensionality reduction helped in distinguishing the samples over a linear combination of the variables (i.e the principal components). `mfa()` applied a PCA over each modality then joined them and applied a PCA, thus the resulting principle components are representative of all modalities.
+
+```{r}
+# heatmap of PC1 & 2
+pheatmap::pheatmap(t(mfa_h)[1:2,], annotation_col = anno_col,
+                  show_colnames = FALSE, main="MFA for multi-omics integration")
+```
+
+### Joint Non-negative Matrix Factorization
+
+NMF splits the original data matrix into WH, but it introduces a strict condition of non-negativity in any value in the original and resulting matrices. NMF calculates the factorized matrices through an optimization problem of minimizing the reconstruction error (Frobenius distance) $$|X-WH|^2$$ where $$W,H >= 0$$. The algorithm starts with randomly initializing W and H then iterating with multiplicative update. The
+
+$$
+X =
+\begin{bmatrix}
+X_1^N / \alpha_1 \\
+X_2^N / \alpha_2 \\
+\vdots \\
+X_L^N / \alpha_L
+\end{bmatrix},
+$$
+
+```{r}
+# Feature-normalize the data
+RnaSeq_data_featnorm = RnaSeq_data / rowSums(RnaSeq_data)
+wes_data_featnorm = wes_data / rowSums(wes_data)
+cnv_data_featnorm = cnv_data / rowSums(cnv_data)
+
+# Normalize by each omics type's frobenius norm
+RnaSeq_data_frobnorm = RnaSeq_data_featnorm / norm(as.matrix(RnaSeq_data_featnorm), type="F")
+wes_data_frobnorm = wes_data_featnorm / norm(as.matrix(wes_data_featnorm), type="F")
+cnv_data_frobnorm = cnv_data_featnorm / norm(as.matrix(cnv_data_featnorm), type="F")
+```
+
+```{r}
+# run NMF
+nmf_result = NMF::nmf(t(rbind(RnaSeq_data_frobnorm, wes_data_frobnorm, cnv_data_frobnorm)),2, method='Frobenius')
+
+# exctract the H and W matrices from the nmf run result
+nmf_h = NMF::basis(nmf_result)
+nmf_w = NMF::coef(nmf_result)
+nmfw = t(nmf_w)
+```
+
+```{r}
+# create a dataframe with the H matrix and the CMS label (subtype)
+nmf_df = as.data.frame(nmf_h)
+colnames(nmf_df) = c("dim1", "dim2")
+nmf_df$subtype = factor(covariates[rownames(nmf_df),]$cms_label)
+
+# create the scatter plot
+ggplot2::ggplot(nmf_df, ggplot2::aes(x=dim1, y=dim2, color=subtype)) +
+ggplot2::geom_point() +
+ggplot2::ggtitle("Scatter plot of 2-component NMF")
+```
+
+```{r}
+pheatmap::pheatmap(t(nmf_df[,1:2]), annotation_col = anno_col, show_colnames=FALSE,
+                   main="Heatmap of 2-component NMF")
+
+```
+
+```{r}
+# feature loadings: features x 2
+nmf_loadings = t(NMF::coef(nmf_result))
+colnames(nmf_loadings) = c("dim1", "dim2")
+
+# omics label for each row, in the same order as the rbind()
+omics_type = rep(c("RNA-seq", "WES", "CNV"),
+                 times = c(nrow(RnaSeq_data), nrow(wes_data), nrow(cnv_data)))
+
+# make row names unique (the same gene can occur in several layers)
+rownames(nmf_loadings) = paste(omics_type, rownames(nmf_loadings), sep = "_")
+
+anno_row = data.frame(omics = factor(omics_type, levels = c("RNA-seq", "WES", "CNV")),
+                      row.names = rownames(nmf_loadings))
+
+pheatmap::pheatmap(nmf_loadings, annotation_row = anno_row,
+                   show_rownames = FALSE, cluster_cols = FALSE, cluster_rows = FALSE,
+                   main = "Feature loadings of the 2-component NMF")
+
+```
+
+```{r}
+# feature weights/coefficients
+omics_means = rowsum(nmf_loadings, group = omics_type) / as.vector(table(omics_type)[unique(omics_type)])
+pheatmap::pheatmap(omics_means, cluster_rows = FALSE, cluster_cols = FALSE,
+                   display_numbers = TRUE, main = "Mean weights per omics type")
+```
+
+By looking into the results, we see that NMF provides nearly similar sensitivity in separating subtypes to what MFA achieves. We are able to observe which modality has more information contributing to latent variables. RNA-seq data is abundant, and gene expression profiles are nearly similar in both subtypes. But WES and CNV data have contrastive contributions making them valuable for differentiating CMS1 from CMS3.
