@@ -4,4 +4,4 @@ Each page includes a single tutorial written as qmd report and rendered as an HT
 In the attAdditions and corrections to some mistakes I noticed in the tutorials are included. 
 
 #### Multi-omics integration
-[Analysis report fr Multi-omics integration](https://mohanadhussein.github.io/Computational_Biomedicine_Analysis/multi-omics/multi-omics.html)
+[Analysis report for Multi-omics integration](https://mohanadhussein.github.io/Computational_Biomedicine_Analysis/multi-omics/)
